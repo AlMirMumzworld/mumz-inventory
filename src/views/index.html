@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>📦 Mumz Inventory</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        [v-cloak] {
+            display: none;
+        }
+
+        .draggable-table {
+            position: absolute;
+            min-width: 400px;
+            min-height: 300px;
+            resize: both;
+            overflow: auto;
+        }
+
+        .table-header {
+            cursor: move;
+            user-select: none;
+        }
+
+        .editable-cell {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .editable-cell:hover {
+            background-color: #f3f4f6;
+        }
+
+        .editing {
+            background-color: #dbeafe !important;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+    <div id="app" v-cloak>
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b border-gray-200 p-4 mb-6">
+            <div class="flex items-center justify-between">
+                <h1 class="text-3xl font-bold text-gray-900 flex items-center gap-3">
+                    📦 Mumz Inventory
+                </h1>
+                <div class="flex gap-2">
+                    <button @click="addNewTable"
+                        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                        <i class="fas fa-plus"></i>
+                        Add Table
+                    </button>
+                    <button @click="resetLayout"
+                        class="bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
+                        <i class="fas fa-refresh"></i>
+                        Reset Layout
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Table Selection Modal -->
+        <div v-if="showTableModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div class="bg-white rounded-lg p-6 w-96 max-w-90vw">
+                <h3 class="text-lg font-semibold mb-4">Select Table to Add</h3>
+                <div class="grid grid-cols-1 gap-2">
+                    <button v-for="(config, tableName) in availableTables" :key="tableName"
+                        @click="createTable(tableName)"
+                        class="text-left p-3 border rounded-lg hover:bg-gray-50 transition-colors">
+                        <div class="font-medium">{{ config.displayName }}</div>
+                        <div class="text-sm text-gray-500">{{ config.description }}</div>
+                    </button>
+                </div>
+                <div class="flex justify-end gap-2 mt-4">
+                    <button @click="showTableModal = false"
+                        class="px-4 py-2 text-gray-600 hover:text-gray-800">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Draggable Tables -->
+        <div class="relative">
+            <draggable-table v-for="table in tables" :key="table.id" :table="table" @close="removeTable"
+                @update="updateRecord" @create="createRecord" @delete="deleteRecord"></draggable-table>
+        </div>
+    </div>
+
+    <script src="/static/apis.js"></script>
+    <script>
+        const { createApp } = Vue;
+
+        // Draggable Table Component
+        const DraggableTable = {
+            props: ['table'],
+            emits: ['close', 'update', 'create', 'delete'],
+            data() {
+                return {
+                    data: [],
+                    loading: true,
+                    error: null,
+                    editingCell: null,
+                    editValue: '',
+                    newRecord: {},
+                    showAddForm: false
+                };
+            },
+            computed: {
+                columns() {
+                    if (this.data.length === 0) return [];
+                    return Object.keys(this.data[0]).filter(key => key !== 'created_at' && key !== 'updated_at');
+                },
+                displayColumns() {
+                    return this.columns.filter(col => col !== 'id');
+                }
+            },
+            async mounted() {
+                this.makeDraggable();
+                await this.loadData();
+            },
+            methods: {
+                makeDraggable() {
+                    const element = this.$refs.tableContainer;
+                    const header = this.$refs.header;
+                    let isDragging = false;
+                    let startX, startY, startLeft, startTop;
+
+                    header.addEventListener('mousedown', (e) => {
+                        isDragging = true;
+                        startX = e.clientX;
+                        startY = e.clientY;
+                        startLeft = element.offsetLeft;
+                        startTop = element.offsetTop;
+                        document.addEventListener('mousemove', onMouseMove);
+                        document.addEventListener('mouseup', onMouseUp);
+                        e.preventDefault();
+                    });
+
+                    const onMouseMove = (e) => {
+                        if (!isDragging) return;
+                        const deltaX = e.clientX - startX;
+                        const deltaY = e.clientY - startY;
+                        element.style.left = (startLeft + deltaX) + 'px';
+                        element.style.top = (startTop + deltaY) + 'px';
+                    };
+
+                    const onMouseUp = () => {
+                        isDragging = false;
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                    };
+                },
+                async loadData() {
+                    try {
+                        this.loading = true;
+                        this.data = await getItems(this.table.name);
+                        this.error = null;
+                    } catch (err) {
+                        this.error = 'Failed to load data';
+                        console.error(err);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                startEdit(rowIndex, column, value) {
+                    this.editingCell = `${rowIndex}-${column}`;
+                    this.editValue = value;
+                },
+                async saveEdit(rowIndex, column) {
+                    try {
+                        const record = this.data[rowIndex];
+                        const updatedData = { ...record, [column]: this.editValue };
+                        await updateItem(this.table.name, record.id, updatedData);
+                        this.data[rowIndex][column] = this.editValue;
+                        this.editingCell = null;
+                    } catch (err) {
+                        console.error('Failed to update:', err);
+                        alert('Failed to update record');
+                    }
+                },
+                cancelEdit() {
+                    this.editingCell = null;
+                    this.editValue = '';
+                },
+                async deleteRow(rowIndex) {
+                    if (!confirm('Are you sure you want to delete this record?')) return;
+                    try {
+                        const record = this.data[rowIndex];
+                        await deleteItem(this.table.name, record.id);
+                        this.data.splice(rowIndex, 1);
+                    } catch (err) {
+                        console.error('Failed to delete:', err);
+                        alert('Failed to delete record');
+                    }
+                },
+                initNewRecord() {
+                    this.newRecord = {};
+                    this.displayColumns.forEach(col => {
+                        this.newRecord[col] = '';
+                    });
+                    this.showAddForm = true;
+                },
+                async saveNewRecord() {
+                    try {
+                        const created = await createItem(this.table.name, this.newRecord);
+                        this.data.push(created);
+                        this.showAddForm = false;
+                        this.newRecord = {};
+                    } catch (err) {
+                        console.error('Failed to create:', err);
+                        alert('Failed to create record');
+                    }
+                },
+                formatValue(value) {
+                    if (value === null || value === undefined) return '';
+                    if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+                    return value.toString();
+                }
+            },
+            template: `
+                <div ref="tableContainer" class="draggable-table bg-white rounded-lg shadow-lg border border-gray-200" :style="{ left: table.x + 'px', top: table.y + 'px', width: table.width + 'px', height: table.height + 'px' }">
+                    <!-- Header -->
+                    <div ref="header" class="table-header bg-gradient-to-r from-blue-600 to-blue-700 text-white p-4 rounded-t-lg flex items-center justify-between">
+                        <h3 class="font-semibold text-lg">{{ table.displayName }}</h3>
+                        <div class="flex items-center gap-2">
+                            <button @click="loadData" class="text-white hover:text-blue-200 transition-colors" title="Refresh">
+                                <i class="fas fa-refresh"></i>
+                            </button>
+                            <button @click="initNewRecord" class="text-white hover:text-blue-200 transition-colors" title="Add Record">
+                                <i class="fas fa-plus"></i>
+                            </button>
+                            <button @click="$emit('close', table.id)" class="text-white hover:text-red-300 transition-colors" title="Close">
+                                <i class="fas fa-times"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Content -->
+                    <div class="flex-1 overflow-auto p-4">
+                        <!-- Loading -->
+                        <div v-if="loading" class="flex items-center justify-center h-32">
+                            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                        </div>
+
+                        <!-- Error -->
+                        <div v-else-if="error" class="text-red-600 text-center p-4">
+                            {{ error }}
+                        </div>
+
+                        <!-- Add Form -->
+                        <div v-else-if="showAddForm" class="mb-4 p-4 bg-gray-50 rounded-lg">
+                            <h4 class="font-medium mb-3">Add New Record</h4>
+                            <div class="grid grid-cols-1 gap-3">
+                                <div v-for="column in displayColumns" :key="column">
+                                    <label class="block text-sm font-medium text-gray-700 mb-1">{{ column }}</label>
+                                    <input 
+                                        v-model="newRecord[column]" 
+                                        :type="column.includes('id') ? 'number' : 'text'"
+                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    >
+                                </div>
+                            </div>
+                            <div class="flex gap-2 mt-3">
+                                <button @click="saveNewRecord" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md text-sm">
+                                    Save
+                                </button>
+                                <button @click="showAddForm = false" class="bg-gray-500 hover:bg-gray-600 text-white px-4 py-2 rounded-md text-sm">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Table -->
+                        <div v-else-if="data.length > 0" class="overflow-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="border-b border-gray-200">
+                                        <th v-for="column in columns" :key="column" class="text-left p-2 font-medium text-gray-700">
+                                            {{ column }}
+                                        </th>
+                                        <th class="text-left p-2 font-medium text-gray-700 w-16">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr v-for="(row, rowIndex) in data" :key="row.id" class="border-b border-gray-100 hover:bg-gray-50">
+                                        <td v-for="column in columns" :key="column" class="p-2">
+                                            <div v-if="editingCell === \`\${rowIndex}-\${column}\`" class="flex gap-1">
+                                                <input 
+                                                    v-model="editValue" 
+                                                    @keyup.enter="saveEdit(rowIndex, column)"
+                                                    @keyup.escape="cancelEdit"
+                                                    class="flex-1 px-2 py-1 border border-blue-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                                    :type="column.includes('id') ? 'number' : 'text'"
+                                                    autofocus
+                                                >
+                                                <button @click="saveEdit(rowIndex, column)" class="text-green-600 hover:text-green-800">
+                                                    <i class="fas fa-check text-xs"></i>
+                                                </button>
+                                                <button @click="cancelEdit" class="text-red-600 hover:text-red-800">
+                                                    <i class="fas fa-times text-xs"></i>
+                                                </button>
+                                            </div>
+                                            <div v-else 
+                                                 @dblclick="column !== 'id' && startEdit(rowIndex, column, row[column])"
+                                                 :class="{ 'editable-cell': column !== 'id' }"
+                                                 class="min-h-[1.5rem] flex items-center">
+                                                {{ formatValue(row[column]) }}
+                                            </div>
+                                        </td>
+                                        <td class="p-2">
+                                            <button @click="deleteRow(rowIndex)" class="text-red-600 hover:text-red-800 text-xs" title="Delete">
+                                                <i class="fas fa-trash"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <!-- Empty State -->
+                        <div v-else class="text-center text-gray-500 p-8">
+                            <i class="fas fa-table text-4xl mb-4 text-gray-300"></i>
+                            <p>No data available</p>
+                            <button @click="initNewRecord" class="mt-2 text-blue-600 hover:text-blue-800">
+                                Add the first record
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `
+        };
+
+        // Main App
+        createApp({
+            components: {
+                DraggableTable
+            },
+            data() {
+                return {
+                    tables: [],
+                    showTableModal: false,
+                    nextId: 1,
+                    availableTables: {
+                        countries: {
+                            displayName: 'Countries',
+                            description: 'Manage country codes and names'
+                        },
+                        business_models: {
+                            displayName: 'Business Models',
+                            description: 'Manage fulfillment types'
+                        },
+                        vendors: {
+                            displayName: 'Vendors',
+                            description: 'Manage vendor information'
+                        },
+                        business_model_priorities: {
+                            displayName: 'Business Model Priorities',
+                            description: 'Manage business model priorities'
+                        },
+                        vendor_priorities: {
+                            displayName: 'Vendor Priorities',
+                            description: 'Manage vendor priorities'
+                        },
+                        inventory: {
+                            displayName: 'Inventory',
+                            description: 'Manage stock levels'
+                        }
+                    }
+                };
+            },
+            mounted() {
+                this.loadLayout();
+            },
+            methods: {
+                addNewTable() {
+                    this.showTableModal = true;
+                },
+                createTable(tableName) {
+                    const config = this.availableTables[tableName];
+                    const table = {
+                        id: this.nextId++,
+                        name: tableName,
+                        displayName: config.displayName,
+                        x: Math.random() * 200 + 50,
+                        y: Math.random() * 200 + 100,
+                        width: 500,
+                        height: 400
+                    };
+                    this.tables.push(table);
+                    this.showTableModal = false;
+                    this.saveLayout();
+                },
+                removeTable(tableId) {
+                    this.tables = this.tables.filter(t => t.id !== tableId);
+                    this.saveLayout();
+                },
+                resetLayout() {
+                    this.tables = [];
+                    this.saveLayout();
+                },
+                saveLayout() {
+                    localStorage.setItem('mumz-inventory-layout', JSON.stringify(this.tables));
+                },
+                loadLayout() {
+                    const saved = localStorage.getItem('mumz-inventory-layout');
+                    if (saved) {
+                        this.tables = JSON.parse(saved);
+                        this.nextId = Math.max(...this.tables.map(t => t.id), 0) + 1;
+                    } else {
+                        // Default layout
+                        this.createTable('countries');
+                        this.createTable('business_models');
+                    }
+                }
+            }
+        }).mount('#app');
+    </script>
+</body>
+
+</html>
