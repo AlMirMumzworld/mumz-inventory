@@ -90,7 +90,8 @@
         <!-- Draggable Tables -->
         <div class="relative">
             <draggable-table v-for="table in tables" :key="table.id" :table="table" @close="removeTable"
-                @update="updateRecord" @create="createRecord" @delete="deleteRecord"></draggable-table>
+                @update="updateRecord" @create="createRecord" @delete="deleteRecord"
+                @position-update="updateTablePosition"></draggable-table>
         </div>
     </div>
 
@@ -339,7 +340,7 @@
         // Draggable Table Component
         const DraggableTable = {
             props: ['table'],
-            emits: ['close', 'update', 'create', 'delete'],
+            emits: ['close', 'update', 'create', 'delete', 'position-update'],
             data() {
                 return {
                     data: [],
@@ -386,15 +387,60 @@
                         if (!isDragging) return;
                         const deltaX = e.clientX - startX;
                         const deltaY = e.clientY - startY;
-                        element.style.left = (startLeft + deltaX) + 'px';
-                        element.style.top = (startTop + deltaY) + 'px';
+                        const newLeft = startLeft + deltaX;
+                        const newTop = startTop + deltaY;
+                        element.style.left = newLeft + 'px';
+                        element.style.top = newTop + 'px';
                     };
 
                     const onMouseUp = () => {
                         isDragging = false;
                         document.removeEventListener('mousemove', onMouseMove);
                         document.removeEventListener('mouseup', onMouseUp);
+
+                        // Update the table position in parent component
+                        const newLeft = element.offsetLeft;
+                        const newTop = element.offsetTop;
+                        this.$emit('position-update', this.table.id, { x: newLeft, y: newTop });
                     };
+
+                    // Add resize tracking
+                    this.addResizeTracking(element);
+                },
+                addResizeTracking(element) {
+                    // Track when user starts resizing (mousedown on resize handle area)
+                    let isResizing = false;
+                    let startWidth, startHeight;
+
+                    element.addEventListener('mousedown', (e) => {
+                        const rect = element.getBoundingClientRect();
+                        const isNearRightEdge = e.clientX > rect.right - 20;
+                        const isNearBottomEdge = e.clientY > rect.bottom - 20;
+                        
+                        if (isNearRightEdge || isNearBottomEdge) {
+                            isResizing = true;
+                            startWidth = element.offsetWidth;
+                            startHeight = element.offsetHeight;
+                        }
+                    });
+
+                    // Track when user stops resizing
+                    document.addEventListener('mouseup', () => {
+                        if (isResizing) {
+                            isResizing = false;
+                            // Save the new size
+                            const newWidth = element.offsetWidth;
+                            const newHeight = element.offsetHeight;
+                            if (newWidth !== startWidth || newHeight !== startHeight) {
+                                this.$emit('position-update', this.table.id, { 
+                                    x: element.offsetLeft, 
+                                    y: element.offsetTop,
+                                    width: newWidth,
+                                    height: newHeight
+                                });
+                            }
+                        }
+                    });
                 },
                 async loadData() {
                     try {
@@ -640,6 +686,17 @@
                 removeTable(tableId) {
                     this.tables = this.tables.filter(t => t.id !== tableId);
                     this.saveLayout();
+                },
+                updateTablePosition(tableId, position) {
+                    const table = this.tables.find(t => t.id === tableId);
+                    if (table) {
+                        table.x = position.x;
+                        table.y = position.y;
+                        // Also update size if provided
+                        if (position.width !== undefined) table.width = position.width;
+                        if (position.height !== undefined) table.height = position.height;
+                        this.saveLayout();
+                    }
                 },
                 resetLayout() {
                     this.tables = [];
