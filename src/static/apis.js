@@ -39,11 +39,9 @@ async function deleteItem(table, item_id) {
   return result;
 }
 
-async function getInventory(sku, country) {
-  const response = await fetch(
-    `${API}/inventory?sku=${sku}&country=${country}`
-  );
+async function getStock(sku, country) {
+  const response = await fetch(`${API}/stock?sku=${sku}&country=${country}`);
   const data = await response.json();
-  console.log(`Inventory for ${sku} in ${country}:`, data);
+  console.log(`Stock for ${sku} in ${country}:`, data);
   return data;
 }

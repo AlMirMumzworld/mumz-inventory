@@ -84,6 +84,9 @@
             </div>
         </div>
 
+        <!-- Stock Lookup Widget (Draggable) -->
+        <stock-lookup></stock-lookup>
+
         <!-- Draggable Tables -->
         <div class="relative">
             <draggable-table v-for="table in tables" :key="table.id" :table="table" @close="removeTable"
@@ -94,6 +97,244 @@
     <script src="/static/apis.js"></script>
     <script>
         const { createApp } = Vue;
+
+        // Stock Lookup Component
+        const StockLookup = {
+            data() {
+                return {
+                    selectedSku: '',
+                    selectedCountry: '',
+                    skuOptions: [],
+                    countryOptions: [],
+                    stockResults: [],
+                    loading: false,
+                    error: null,
+                    showResults: false,
+                    isMinimized: false,
+                    position: { x: 50, y: 100 }
+                };
+            },
+            async mounted() {
+                this.makeDraggable();
+                await this.loadOptions();
+                this.loadPosition();
+            },
+            methods: {
+                makeDraggable() {
+                    const element = this.$refs.stockContainer;
+                    const header = this.$refs.stockHeader;
+                    let isDragging = false;
+                    let startX, startY, startLeft, startTop;
+
+                    header.addEventListener('mousedown', (e) => {
+                        // Don't start dragging if clicking on buttons
+                        if (e.target.closest('button')) return;
+
+                        isDragging = true;
+                        startX = e.clientX;
+                        startY = e.clientY;
+                        startLeft = element.offsetLeft;
+                        startTop = element.offsetTop;
+                        document.addEventListener('mousemove', onMouseMove);
+                        document.addEventListener('mouseup', onMouseUp);
+                        e.preventDefault();
+                    });
+
+                    const onMouseMove = (e) => {
+                        if (!isDragging) return;
+                        const deltaX = e.clientX - startX;
+                        const deltaY = e.clientY - startY;
+                        const newLeft = startLeft + deltaX;
+                        const newTop = startTop + deltaY;
+
+                        element.style.left = newLeft + 'px';
+                        element.style.top = newTop + 'px';
+
+                        this.position.x = newLeft;
+                        this.position.y = newTop;
+                    };
+
+                    const onMouseUp = () => {
+                        isDragging = false;
+                        document.removeEventListener('mousemove', onMouseMove);
+                        document.removeEventListener('mouseup', onMouseUp);
+                        this.savePosition();
+                    };
+                },
+                async loadOptions() {
+                    try {
+                        // Load unique SKUs from inventory
+                        const inventory = await getItems('inventory');
+                        const uniqueSkus = [...new Set(inventory.map(item => item.sku))].sort();
+                        this.skuOptions = uniqueSkus;
+
+                        // Load countries
+                        const countries = await getItems('countries');
+                        this.countryOptions = countries.map(c => ({ code: c.code, name: c.name }));
+                    } catch (err) {
+                        console.error('Failed to load options:', err);
+                    }
+                },
+                async getStock() {
+                    if (!this.selectedSku || !this.selectedCountry) {
+                        alert('Please select both SKU and Country');
+                        return;
+                    }
+
+                    try {
+                        this.loading = true;
+                        this.error = null;
+                        this.stockResults = await getStock(this.selectedSku, this.selectedCountry);
+                        this.showResults = true;
+                    } catch (err) {
+                        this.error = 'Failed to fetch stock data';
+                        console.error(err);
+                    } finally {
+                        this.loading = false;
+                    }
+                },
+                toggleMinimize() {
+                    this.isMinimized = !this.isMinimized;
+                    this.savePosition();
+                },
+                clearResults() {
+                    this.showResults = false;
+                    this.stockResults = [];
+                    this.selectedSku = '';
+                    this.selectedCountry = '';
+                },
+                savePosition() {
+                    localStorage.setItem('stock-lookup-position', JSON.stringify({
+                        x: this.position.x,
+                        y: this.position.y,
+                        isMinimized: this.isMinimized
+                    }));
+                },
+                loadPosition() {
+                    const saved = localStorage.getItem('stock-lookup-position');
+                    if (saved) {
+                        const data = JSON.parse(saved);
+                        this.position = { x: data.x, y: data.y };
+                        this.isMinimized = data.isMinimized || false;
+                    }
+                }
+            },
+            template: `
+                <div ref="stockContainer" 
+                     class="absolute z-40 bg-white rounded-lg shadow-xl border border-gray-200 draggable-table" 
+                     :class="{ 'w-96': !isMinimized, 'w-64': isMinimized }"
+                     :style="{ left: position.x + 'px', top: position.y + 'px', minHeight: '300px', maxHeight: '80vh', overflowY: 'auto' }">
+                    <!-- Header -->
+                    <div ref="stockHeader" 
+                         class="table-header bg-gradient-to-r from-purple-600 to-indigo-700 text-white p-4 rounded-t-lg flex items-center justify-between">
+                        <h3 class="font-semibold text-lg flex items-center gap-2">
+                            <i class="fas fa-search"></i>
+                            Stock Lookup
+                        </h3>
+                        <div class="flex items-center gap-2">
+                            <button @click="clearResults" v-if="showResults" class="text-white hover:text-purple-200 transition-colors" title="Clear">
+                                <i class="fas fa-eraser"></i>
+                            </button>
+                            <button @click="toggleMinimize" class="text-white hover:text-purple-200 transition-colors" :title="isMinimized ? 'Expand' : 'Minimize'">
+                                <i :class="isMinimized ? 'fas fa-expand' : 'fas fa-minus'"></i>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Content -->
+                    <div v-if="!isMinimized" class="p-4">
+                        <!-- Search Form -->
+                        <div v-if="!showResults" class="space-y-4">
+                            <!-- SKU Dropdown -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">SKU</label>
+                                <select v-model="selectedSku" 
+                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500">
+                                    <option value="">Select SKU...</option>
+                                    <option v-for="sku in skuOptions" :key="sku" :value="sku">{{ sku }}</option>
+                                </select>
+                            </div>
+
+                            <!-- Country Dropdown -->
+                            <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-2">Country</label>
+                                <select v-model="selectedCountry" 
+                                        class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-purple-500 focus:border-purple-500">
+                                    <option value="">Select Country...</option>
+                                    <option v-for="country in countryOptions" :key="country.code" :value="country.code">
+                                        {{ country.code }} - {{ country.name }}
+                                    </option>
+                                </select>
+                            </div>
+
+                            <!-- Get Stock Button -->
+                            <button @click="getStock" 
+                                    :disabled="loading || !selectedSku || !selectedCountry"
+                                    class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 disabled:from-gray-400 disabled:to-gray-500 text-white px-4 py-3 rounded-md font-medium transition-all flex items-center justify-center gap-2">
+                                <i v-if="loading" class="fas fa-spinner fa-spin"></i>
+                                <i v-else class="fas fa-chart-bar"></i>
+                                {{ loading ? 'Loading...' : 'Get Stock' }}
+                            </button>
+
+                            <!-- Error Message -->
+                            <div v-if="error" class="text-red-600 text-sm bg-red-50 p-3 rounded-md">
+                                {{ error }}
+                            </div>
+                        </div>
+
+                        <!-- Results -->
+                        <div v-if="showResults && !loading">
+                            <!-- Results Header -->
+                            <div class="flex items-center justify-between mb-4">
+                                <h4 class="font-medium text-gray-900">
+                                    Stock Results for {{ selectedSku }} in {{ selectedCountry }}
+                                </h4>
+                                <button @click="clearResults" class="text-gray-500 hover:text-gray-700">
+                                    <i class="fas fa-arrow-left"></i> Back
+                                </button>
+                            </div>
+
+                            <!-- Results Table -->
+                            <div v-if="stockResults.length > 0" class="overflow-auto max-h-96">
+                                <table class="w-full text-sm">
+                                    <thead class="bg-gray-50">
+                                        <tr>
+                                            <th v-for="(value, key) in stockResults[0]" :key="key" 
+                                                class="text-left p-2 font-medium text-gray-700 border-b">
+                                                {{ key }}
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr v-for="(result, index) in stockResults" :key="index" 
+                                            class="border-b border-gray-100 hover:bg-gray-50">
+                                            <td v-for="(value, key) in result" :key="key" class="p-2">
+                                                <span v-if="key === 'stock'" 
+                                                      :class="{ 'text-green-600 font-medium': value > 0, 'text-red-600': value <= 0 }">
+                                                    {{ value }}
+                                                </span>
+                                                <span v-else>{{ value }}</span>
+                                            </td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            <!-- No Results -->
+                            <div v-else class="text-center text-gray-500 p-8">
+                                <i class="fas fa-inbox text-4xl mb-4 text-gray-300"></i>
+                                <p>No stock data found for this combination</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Minimized State -->
+                    <div v-if="isMinimized" class="p-2 text-center text-white text-sm">
+                        Click to expand
+                    </div>
+                </div>
+            `
+        };
 
         // Draggable Table Component
         const DraggableTable = {
@@ -338,7 +579,8 @@
         // Main App
         createApp({
             components: {
-                DraggableTable
+                DraggableTable,
+                StockLookup
             },
             data() {
                 return {
